@@ -1,5 +1,6 @@
 interface Env {
   DashboardDO: DurableObjectNamespace<DashboardDO>;
+  AI: Ai;
   ASSETS: Fetcher;
 }
 

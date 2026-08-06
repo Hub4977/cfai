@@ -18,6 +18,7 @@
       "new_sqlite_classes": ["DashboardDO"]
     }
   ],
+  "ai": { "binding": "AI" },
   "assets": {
     "not_found_handling": "single-page-application"
   },
