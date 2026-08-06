@@ -1,0 +1,32 @@
+{
+  "name": "@example/computer-dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Web UI Dashboard for Cloudflare Computer - Visual file browser, terminal, backend switcher, and AI interaction.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "preview": "npm run build && vite preview",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/computer": "*",
+    "@cloudflare/computer-rpc": "*",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.39.2",
+    "@cloudflare/workers-types": "^4.20260616.1",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "tailwindcss": "^4.3.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16",
+    "wrangler": "^4.107.1"
+  }
+}
