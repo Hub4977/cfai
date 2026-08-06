@@ -1,10 +1,15 @@
 // Dashboard Worker — serves React SPA + REST API backed by DO SQLite VFS
 // Free-tier compatible (no Worker Loader needed).
+// Supports chunked storage for large files (images, videos, etc.)
 
 import { DurableObject } from "cloudflare:workers";
 
+// Max chunk size ~512KB to stay well within DO SQLite limits
+const CHUNK_SIZE = 512 * 1024;
+
 // ---------------------------------------------------------------------------
 // Durable Object — lightweight VFS using DO SQLite storage
+// Files > CHUNK_SIZE are split into chunks stored in vfs_chunks table.
 // ---------------------------------------------------------------------------
 
 export class DashboardDO extends DurableObject<Env> {
@@ -13,45 +18,90 @@ export class DashboardDO extends DurableObject<Env> {
   private ensureTable() {
     if (this.ready) return;
     this.ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS vfs (path TEXT PRIMARY KEY, content BLOB, kind TEXT DEFAULT 'file', modified TEXT DEFAULT (datetime('now')))"
+      "CREATE TABLE IF NOT EXISTS vfs (path TEXT PRIMARY KEY, kind TEXT DEFAULT 'file', size INTEGER DEFAULT 0, modified TEXT DEFAULT (datetime('now')))"
+    );
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS vfs_chunks (path TEXT, idx INTEGER, content BLOB, PRIMARY KEY (path, idx))"
     );
     this.ready = true;
   }
 
-  async getFile(path: string): Promise<{ content: ArrayBuffer | null }> {
+  async getFile(path: string): Promise<{ content: ArrayBuffer | null; size: number }> {
     this.ensureTable();
-    const cursor = this.ctx.storage.sql.exec("SELECT content FROM vfs WHERE path = ?", path);
-    const rows = [...cursor];
-    if (rows.length === 0) return { content: null };
-    return { content: rows[0].content as ArrayBuffer };
+    const meta = this.ctx.storage.sql.exec("SELECT size FROM vfs WHERE path = ?", path);
+    const metaRows = [...meta];
+    if (metaRows.length === 0) return { content: null, size: 0 };
+    const fileSize = metaRows[0].size as number;
+
+    // If small file, check if stored in chunks
+    const cursor = this.ctx.storage.sql.exec("SELECT idx, content FROM vfs_chunks WHERE path = ? ORDER BY idx", path);
+    const chunks = [...cursor];
+    if (chunks.length > 0) {
+      // Reassemble from chunks
+      const parts: ArrayBuffer[] = [];
+      for (const row of chunks) {
+        parts.push(row.content as ArrayBuffer);
+      }
+      const total = parts.reduce((s, p) => s + p.byteLength, 0);
+      const result = new Uint8Array(total);
+      let offset = 0;
+      for (const p of parts) {
+        result.set(new Uint8Array(p), offset);
+        offset += p.byteLength;
+      }
+      return { content: result.buffer as ArrayBuffer, size: fileSize };
+    }
+
+    return { content: new ArrayBuffer(0), size: fileSize };
   }
 
   async putFile(path: string, content: ArrayBuffer): Promise<void> {
     this.ensureTable();
+    const size = content.byteLength;
+
+    // Split into chunks
+    const chunks: ArrayBuffer[] = [];
+    for (let i = 0; i < size; i += CHUNK_SIZE) {
+      const end = Math.min(i + CHUNK_SIZE, size);
+      chunks.push(content.slice(i, end));
+    }
+
+    // Delete old chunks first
+    this.ctx.storage.sql.exec("DELETE FROM vfs_chunks WHERE path = ?", path);
+
+    // Insert new chunks
+    for (let i = 0; i < chunks.length; i++) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO vfs_chunks (path, idx, content) VALUES (?, ?, ?)",
+        path, i, chunks[i]
+      );
+    }
+
+    // Upsert metadata
     this.ctx.storage.sql.exec(
-      "INSERT OR REPLACE INTO vfs (path, content, kind, modified) VALUES (?, ?, 'file', datetime('now'))",
-      path, content
+      "INSERT OR REPLACE INTO vfs (path, kind, size, modified) VALUES (?, 'file', ?, datetime('now'))",
+      path, size
     );
   }
 
-  async readDir(path: string): Promise<Array<{ name: string; kind: string }>> {
+  async readDir(path: string): Promise<Array<{ name: string; kind: string; size?: number }>> {
     this.ensureTable();
     const prefix = path === "/" ? "/" : path.endsWith("/") ? path : path + "/";
     const cursor = this.ctx.storage.sql.exec(
-      "SELECT path, kind FROM vfs WHERE path LIKE ? AND path != ?",
+      "SELECT path, kind, size FROM vfs WHERE path LIKE ? AND path != ?",
       `${prefix}%`, prefix
     );
-    const entries = new Map<string, string>();
+    const entries = new Map<string, { kind: string; size: number }>();
     for (const row of cursor) {
       const p = row.path as string;
       const rest = p.slice(prefix.length);
       if (!rest) continue;
       const parts = rest.split("/");
       if (parts[0] && !entries.has(parts[0])) {
-        entries.set(parts[0], parts.length > 1 ? "directory" : (row.kind as string));
+        entries.set(parts[0], { kind: parts.length > 1 ? "directory" : (row.kind as string), size: (row.size as number) || 0 });
       }
     }
-    return [...entries.entries()].map(([name, kind]) => ({ name, kind }));
+    return [...entries.entries()].map(([name, { kind, size }]) => ({ name, kind, size }));
   }
 
   async deleteFile(path: string): Promise<boolean> {
@@ -59,8 +109,9 @@ export class DashboardDO extends DurableObject<Env> {
     const cursor = this.ctx.storage.sql.exec("SELECT path FROM vfs WHERE path = ?", path);
     const rows = [...cursor];
     if (rows.length === 0) return false;
-    // Delete the file and any children (if it was a directory prefix)
+    // Delete metadata + chunks for this file
     this.ctx.storage.sql.exec("DELETE FROM vfs WHERE path = ? OR path LIKE ?", path, `${path}/%`);
+    this.ctx.storage.sql.exec("DELETE FROM vfs_chunks WHERE path = ? OR path LIKE ?", path, `${path}/%`);
     return true;
   }
 

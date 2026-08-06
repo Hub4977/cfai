@@ -129,21 +129,30 @@ export default function FileBrowser({ workspace }: Props) {
     }
   };
 
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+
   const uploadFile = async (file: File) => {
     setUploading(true);
+    setUploadProgress(`Reading ${file.name}...`);
     try {
       const path = `${currentPath}/${file.name}`;
       const arrayBuffer = await file.arrayBuffer();
+      setUploadProgress(`Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`);
       const res = await fetch(`${API_BASE}/c/${workspace}/file${path}`, {
         method: "PUT",
         body: arrayBuffer,
+        headers: { "Content-Type": "application/octet-stream" },
       });
-      if (!res.ok) throw new Error(`Upload failed: ${res.statusText}`);
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Upload failed: ${res.statusText}`);
+      }
       await fetchDir(currentPath);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -195,7 +204,7 @@ export default function FileBrowser({ workspace }: Props) {
             disabled={uploading}
             className="px-3 py-1.5 bg-[var(--color-surface)] border border-[var(--color-border)] rounded text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer disabled:opacity-50"
           >
-            {uploading ? "Uploading..." : "Upload"}
+            {uploading ? (uploadProgress || "Uploading...") : "Upload"}
           </button>
           <input
             ref={fileInputRef}
