@@ -54,6 +54,16 @@ export class DashboardDO extends DurableObject<Env> {
     return [...entries.entries()].map(([name, kind]) => ({ name, kind }));
   }
 
+  async deleteFile(path: string): Promise<boolean> {
+    this.ensureTable();
+    const cursor = this.ctx.storage.sql.exec("SELECT path FROM vfs WHERE path = ?", path);
+    const rows = [...cursor];
+    if (rows.length === 0) return false;
+    // Delete the file and any children (if it was a directory prefix)
+    this.ctx.storage.sql.exec("DELETE FROM vfs WHERE path = ? OR path LIKE ?", path, `${path}/%`);
+    return true;
+  }
+
   async getBackendName(): Promise<string> {
     return "durable-object-sqlite";
   }
@@ -87,6 +97,7 @@ async function handleAPI(request: Request, env: Env, wsName: string, rest: strin
   if (rest === "status" && request.method === "GET") return handleStatus(env, wsName);
   if (rest === "switch-backend" && request.method === "POST") return handleSwitchBackend();
   if (rest === "ai" && request.method === "POST") return handleAI(request, env, wsName);
+  if (rest === "delete" && request.method === "POST") return handleDelete(request, env, wsName);
 
   const fileMatch = rest.match(/^file\/(.+)$/);
   if (fileMatch) {
@@ -102,13 +113,46 @@ function getStub(env: Env, name: string): any {
   return env.DashboardDO.get(env.DashboardDO.idFromName(name));
 }
 
+// --- MIME type mapping ---
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".svg": "image/svg+xml", ".bmp": "image/bmp", ".ico": "image/x-icon",
+  ".mp4": "video/mp4", ".webm": "video/webm", ".ogg": "video/ogg",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac", ".aac": "audio/aac",
+  ".pdf": "application/pdf",
+  ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript",
+  ".json": "application/json", ".xml": "text/xml", ".yaml": "text/yaml", ".yml": "text/yaml",
+  ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
+  ".py": "text/x-python", ".ts": "text/typescript", ".tsx": "text/typescript", ".jsx": "text/javascript",
+};
+
+function getContentType(path: string): string {
+  const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
+  return MIME_TYPES[ext] || "application/octet-stream";
+}
+
+function handleDelete(request: Request, env: Env, name: string): Promise<Response> {
+  return (async () => {
+    let body: { path?: string };
+    try { body = await request.json() as typeof body; } catch { return errorJSON(new Error("invalid JSON"), 400); }
+    if (!body.path) return errorJSON(new Error("must provide path"), 400);
+    const resolved = resolvePath(body.path.replace(/^file\/?/, ""));
+    if (!resolved) return errorJSON(new Error(`path must sit under ${MOUNT_ROOT}`), 400);
+    const stub = getStub(env, name);
+    const deleted = await stub.deleteFile(resolved);
+    if (!deleted) return errorJSON(new Error("ENOENT: file not found"), 404);
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  })();
+}
+
 async function handleFile(request: Request, env: Env, name: string, path: string): Promise<Response> {
   const stub = getStub(env, name);
 
   if (request.method === "GET") {
     const { content } = await stub.getFile(path);
     if (!content) return errorJSON(new Error("ENOENT: file not found"), 404);
-    return new Response(content, { status: 200, headers: { "content-type": "application/octet-stream" } });
+    const contentType = getContentType(path);
+    return new Response(content, { status: 200, headers: { "content-type": contentType } });
   }
 
   if (request.method === "PUT") {
