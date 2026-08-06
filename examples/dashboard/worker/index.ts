@@ -136,7 +136,8 @@ function handleDelete(request: Request, env: Env, name: string): Promise<Respons
     let body: { path?: string };
     try { body = await request.json() as typeof body; } catch { return errorJSON(new Error("invalid JSON"), 400); }
     if (!body.path) return errorJSON(new Error("must provide path"), 400);
-    const resolved = resolvePath(body.path.replace(/^file\/?/, ""));
+    const cleanPath = body.path.replace(/^\/+/, "").replace(/^file\/?/, "");
+    const resolved = resolvePath(cleanPath);
     if (!resolved) return errorJSON(new Error(`path must sit under ${MOUNT_ROOT}`), 400);
     const stub = getStub(env, name);
     const deleted = await stub.deleteFile(resolved);
