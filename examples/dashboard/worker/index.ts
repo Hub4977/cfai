@@ -157,20 +157,19 @@ async function handleAI(request: Request, env: Env, name: string): Promise<Respo
   try { body = await request.json() as typeof body; } catch { return errorJSON(new Error("invalid JSON"), 400); }
   if (!body.prompt) return errorJSON(new Error("must provide prompt"), 400);
 
-  if ("AI" in env) {
-    try {
-      const aiResp: any = await (env as any).AI.run("@cf/meta/llama-3-8b-instruct", {
-        messages: [{ role: "user", content: body.prompt }],
-      });
-      return new Response(JSON.stringify({ response: aiResp.response || JSON.stringify(aiResp) }), {
-        status: 200, headers: { "content-type": "application/json" },
-      });
-    } catch { /* fallback */ }
+  try {
+    const aiResp: any = await env.AI.run("@cf/meta/llama-4-scout-17b-16e-instruct", {
+      messages: [{ role: "user", content: body.prompt }],
+    });
+    return new Response(JSON.stringify({ response: aiResp.response || JSON.stringify(aiResp) }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return new Response(JSON.stringify({
+      response: `AI error: ${msg}\nYour prompt: "${body.prompt}"`,
+    }), { status: 200, headers: { "content-type": "application/json" } });
   }
-
-  return new Response(JSON.stringify({
-    response: `AI integration requires Workers AI binding. Add "ai": { "binding": "AI" } to wrangler.jsonc to enable.\nYour prompt: "${body.prompt}"`,
-  }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 function errorJSON(error: unknown, status: number): Response {
